@@ -11,6 +11,7 @@ providing a search across all public Gists for a given Github account.
 
 import requests
 from flask import Flask, jsonify, request
+import re
 
 
 # *The* app object
@@ -39,11 +40,25 @@ def gists_for_user(username):
     """
     gists_url = 'https://api.github.com/users/{username}/gists'.format(
             username=username)
-    response = requests.get(gists_url)
+
     # BONUS: What failures could happen?
+    # Failures like username not found or API limit reached can happen
+    # These are handled by following if block.
     # BONUS: Paging? How does this work for users with tons of gists?
+    # If a user has tons of gists. The trucated flag will be set to true.
+
+    response = requests.get(gists_url)
+    if response.status_code != 200:
+        return None
 
     return response.json()
+
+
+def valid_arguments(arguments):
+    if set(['username', 'pattern']) == set(arguments) and isinstance(arguments['username'], str) and \
+       isinstance(arguments['pattern'], str):
+        return True
+    return False
 
 
 @app.route("/api/v1/search", methods=['POST'])
@@ -58,26 +73,70 @@ def search():
         object contains the list of matches along with a 'status' key
         indicating any failure conditions.
     """
-    post_data = request.get_json()
-    # BONUS: Validate the arguments?
 
-    username = post_data['username']
-    pattern = post_data['pattern']
-
+    post_data = request.json
     result = {}
-    gists = gists_for_user(username)
-    # BONUS: Handle invalid users?
+    status = True
+    warnings = []
+    gists = None
 
-    for gist in gists:
-        # REQUIRED: Fetch each gist and check for the pattern
-        # BONUS: What about huge gists?
-        # BONUS: Can we cache results in a datastore/db?
-        pass
+    # BONUS: Validate the arguments?
+    if not valid_arguments(post_data):
+        status = False
 
-    result['status'] = 'success'
-    result['username'] = username
-    result['pattern'] = pattern
-    result['matches'] = []
+    if status:
+        username = post_data['username']
+        pattern = post_data['pattern']
+
+        result['matches'] = []
+        gists = gists_for_user(username)
+        # BONUS: Handle invalid users?
+        if gists is not None:
+            for gist in gists:
+                # REQUIRED: Fetch each gist and check for the pattern
+                # Completed
+                # BONUS: What about huge gists?
+                # If gists are greater than 300, added warning
+                # BONUS: Can we cache results in a datastore/db?
+                # Skipped
+
+                response = requests.get(gist['url'])
+
+                if gist['truncated']:
+                    warnings.append(f"Gist({gist['id']}): More than 300 files")
+
+                # Search if not truncated
+                if re.search(pattern, response.content.decode('utf-8')):
+                    result['matches'].append(f"https://gist.github.com/{username}/{gist['id']}")
+                    continue
+
+                if(response.status_code != 200):
+                    # Skipping if API limit reached
+                    break
+
+                gist_json = response.json()
+                files = gist_json['files']
+
+                # Search if truncated
+                for key in files:
+                    if files[key]['truncated']:
+                        file_response = requests.get(files[key]["raw_url"])
+                        if(file_response.status_code != 200):
+                            # Skipping if API limit reached
+                            break
+                        if re.search(pattern, file_response.content.decode("utf-8")):
+                            result['matches'].append(f"https://gist.github.com/{username}/{gist['id']}")
+            result['status'] = 'success'
+        else:
+            result['status'] = 'failure'
+
+    if status:
+        result['username'] = username
+        result['pattern'] = pattern
+        if len(warnings) > 0:
+            result['warnings'] = warnings
+    else:
+        result['status'] = 'arguments not valid'
 
     return jsonify(result)
 
